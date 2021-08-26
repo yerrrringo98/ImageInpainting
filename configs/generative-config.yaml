@@ -2,6 +2,8 @@
 dataset_name: Visual Genome
 image_dir: ../data/VisualGenome/images
 h5_path: ../data/VisualGenome/train.h5
+vocab_path: '../data/VisualGenome/vocab.json'
+
 batch_size: 48
 image_size: 128
 max_obj_num: 1
@@ -11,11 +13,10 @@ margin: [0, 0]
 discounted_mask: True
 spatial_discounting_gamma: 0.9
 random_crop: True
-mask_type: hole     # hole | mosaic
+mask_type: object     # hole | mosaic
 mosaic_unit_size: 12
 
 # training parameters
-expname: benchmark
 cuda: True
 gpu_ids: [0]    # set the GPU ids to use, e.g. [0] or [1, 2]
 num_workers: 7
@@ -26,10 +27,14 @@ beta1: 0.5
 beta2: 0.9
 n_critic: 5   # when would compute g loss
 niter: 500000
-print_iter: 100
-viz_iter: 100
+print_iter: 1
+viz_iter: 1
+snapshot_save_iter: 1
 viz_max_out: 12
-snapshot_save_iter: 10000
+
+# test parameters
+test_result: ./result
+test_load: ./checkpoints/Visual Genome/model/weights_1.pth
 
 # loss weight
 coarse_l1_alpha: 1.2

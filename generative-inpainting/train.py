@@ -4,8 +4,6 @@ import shutil
 from argparse import ArgumentParser
 
 import torch.backends.cudnn as cudnn
-import torchvision.transforms as transforms
-import torchvision.utils as vutils
 from tensorboardX import SummaryWriter
 
 from trainer import Trainer
@@ -15,6 +13,7 @@ from os import path
 from utils.tools import get_config, random_bbox, mask_image
 from utils.logger import get_logger
 from utils.psnr import *
+from torchvision.utils import make_grid, save_image
 
 sys.path.append(path.dirname( path.dirname( path.abspath(__file__) ) ))
 from data.dataset import VGdataset, vg_collate_fn, test_mask
@@ -41,13 +40,16 @@ def main():
 
     # Configure checkpoint path
     checkpoint_path = os.path.join('checkpoints',
-                                   config['dataset_name'],
-                                   config['mask_type'] + '_' + config['expname'])
+                                   config['dataset_name'])
     if not os.path.exists(checkpoint_path):
         os.makedirs(checkpoint_path)
+        os.makedirs(os.path.join(checkpoint_path, 'run'))
+        os.makedirs(os.path.join(checkpoint_path, 'log'))
+        os.makedirs(os.path.join(checkpoint_path, 'image'))
+        os.makedirs(os.path.join(checkpoint_path, 'model'))
     shutil.copy(args.config, os.path.join(checkpoint_path, os.path.basename(args.config)))
-    writer = SummaryWriter(logdir=checkpoint_path)
-    logger = get_logger(checkpoint_path)    # get logger and configure it at the first call
+    writer = SummaryWriter(logdir=os.path.join(checkpoint_path, 'run'))
+    logger = get_logger(os.path.join(checkpoint_path, 'log'))    # get logger and configure it at the first call
 
     logger.info("Arguments: {}".format(args))
     # Set random seed
@@ -67,9 +69,9 @@ def main():
         logger.info("Training on dataset: {}".format(config['dataset_name']))
 
         if config['dataset_name'] == "Visual Genome":
-            with open('../data/VisualGenome/vocab.json', 'r') as f:
+            with open(config['vocab_path'], 'r') as f:
                 vocab = json.load(f)
-            num_objects = len(vocab['object_idx_to_name'])
+            # num_objects = len(vocab['object_idx_to_name'])
         train_dataset = VGdataset(vocab=vocab, h5_path=config['h5_path'],
                                   image_dir=config['image_dir'], image_size=config['image_size'], include_relationships=False)
         loader_kwargs = {
@@ -81,7 +83,7 @@ def main():
         train_loader = torch.utils.data.DataLoader(dataset=train_dataset, **loader_kwargs)
 
         # Define the trainer
-        trainer = Trainer(config)
+        trainer = Trainer(config, mode='train')
         logger.info("\n{}".format(trainer.netG))
         logger.info("\n{}".format(trainer.localD))
         logger.info("\n{}".format(trainer.globalD))
@@ -93,7 +95,7 @@ def main():
             trainer_module = trainer
 
         # Get the resume iteration to restart training
-        start_iteration = trainer_module.resume(config['resume'], iteration=500000) if config['resume'] else 1
+        start_iteration = trainer_module.resume(config['resume']) if config['resume'] else 1
 
         iterable_train_loader = iter(train_loader)
 
@@ -170,8 +172,9 @@ def main():
                 else:
                     viz_images = torch.stack([x, inpainted_result, offset_flow], dim=1)
                 viz_images = viz_images.view(-1, *list(x.size())[1:])
-                vutils.save_image(viz_images,
-                                  '%s/niter_%03d.png' % (checkpoint_path, iteration),
+                # writer.add_image('valid_img', make_grid(viz_images, nrow=3*4, normalize=True))
+                save_image(viz_images,
+                                  '%s/niter_%03d.png' % (os.path.join(checkpoint_path,'image'), iteration),
                                   nrow=3 * 4,
                                   normalize=True)
 

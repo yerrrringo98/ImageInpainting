@@ -12,25 +12,29 @@ logger = get_logger()
 
 
 class Trainer(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, mode):
         super(Trainer, self).__init__()
         self.config = config
         self.use_cuda = self.config['cuda']
         self.device_ids = self.config['gpu_ids']
 
         self.netG = Generator(self.config['netG'], self.use_cuda, self.device_ids)
-        self.localD = LocalDis(self.config['netD'], self.use_cuda, self.device_ids)
-        self.globalD = GlobalDis(self.config['netD'], self.use_cuda, self.device_ids)
-
-        self.optimizer_g = torch.optim.Adam(self.netG.parameters(), lr=self.config['lr'],
-                                            betas=(self.config['beta1'], self.config['beta2']))
-        d_params = list(self.localD.parameters()) + list(self.globalD.parameters())
-        self.optimizer_d = torch.optim.Adam(d_params, lr=config['lr'],
-                                            betas=(self.config['beta1'], self.config['beta2']))
         if self.use_cuda:
             self.netG.to(self.device_ids[0])
-            self.localD.to(self.device_ids[0])
-            self.globalD.to(self.device_ids[0])
+
+        if mode=='train':
+            self.localD = LocalDis(self.config['netD'], self.use_cuda, self.device_ids)
+            self.globalD = GlobalDis(self.config['netD'], self.use_cuda, self.device_ids)
+
+            self.optimizer_g = torch.optim.Adam(self.netG.parameters(), lr=self.config['lr'],
+                                                betas=(self.config['beta1'], self.config['beta2']))
+            d_params = list(self.localD.parameters()) + list(self.globalD.parameters())
+            self.optimizer_d = torch.optim.Adam(d_params, lr=config['lr'],
+                                                betas=(self.config['beta1'], self.config['beta2']))
+            if self.use_cuda:
+                self.localD.to(self.device_ids[0])
+                self.globalD.to(self.device_ids[0])
+
 
     def forward(self, x, bboxes, masks, ground_truth, compute_loss_g=False):
         self.train()
@@ -134,32 +138,45 @@ class Trainer(nn.Module):
         return x2_inpaint, offset_flow
 
     def save_model(self, checkpoint_dir, iteration):
-        # Save generators, discriminators, and optimizers
-        gen_name = os.path.join(checkpoint_dir, 'gen_%08d.pt' % iteration)
-        dis_name = os.path.join(checkpoint_dir, 'dis_%08d.pt' % iteration)
-        opt_name = os.path.join(checkpoint_dir, 'optimizer.pt')
-        torch.save(self.netG.state_dict(), gen_name)
-        torch.save({'localD': self.localD.state_dict(),
-                    'globalD': self.globalD.state_dict()}, dis_name)
-        torch.save({'gen': self.optimizer_g.state_dict(),
-                    'dis': self.optimizer_d.state_dict()}, opt_name)
+        print('Saving weights to', checkpoint_dir, '...')
+        torch.save({
+            'G': self.netG.state_dict(),
+            'localD': self.localD.state_dict(),
+            'globalD': self.globalD.state_dict(),
+            'optimG': self.optimizer_g.state_dict(),
+            'optimD': self.optimizer_d.state_dict(),
+            'iteration': iteration
+        }, os.path.join(checkpoint_dir, 'model/weights_{}.pth'.format(iteration)))
 
-    def resume(self, checkpoint_dir, iteration=0, test=False):
-        # Load generators
-        last_model_name = get_model_list(checkpoint_dir, "gen", iteration=iteration)
-        self.netG.load_state_dict(torch.load(last_model_name))
-        iteration = int(last_model_name[-11:-3])
+    # def save_model(self, checkpoint_dir, iteration):
+    #     # Save generators, discriminators, and optimizers
+    #     gen_name = os.path.join(checkpoint_dir, 'gen_%08d.pt' % iteration)
+    #     dis_name = os.path.join(checkpoint_dir, 'dis_%08d.pt' % iteration)
+    #     opt_name = os.path.join(checkpoint_dir, 'optimizer.pt')
+    #     torch.save({'G':self.netG.state_dict(),
+    #                 'iteration': iteration}, gen_name)
+    #     torch.save({'localD': self.localD.state_dict(),
+    #                 'globalD': self.globalD.state_dict()}, dis_name)
+    #     torch.save({'gen': self.optimizer_g.state_dict(),
+    #                 'dis': self.optimizer_d.state_dict()}, opt_name)
+
+    def resume(self, checkpoint_dir, test=False):
+        print('Loading saved weights from', checkpoint_dir, '...')
+        states = torch.load(checkpoint_dir, map_location=lambda storage, loc: storage)
+        if 'G' in states:
+            self.netG.load_state_dict(states['G'])
+        if 'iteration' in states:
+            iteration = states['iteration']
 
         if not test:
-            # Load discriminators
-            last_model_name = get_model_list(checkpoint_dir, "dis", iteration=iteration)
-            state_dict = torch.load(last_model_name)
-            self.localD.load_state_dict(state_dict['localD'])
-            self.globalD.load_state_dict(state_dict['globalD'])
-            # Load optimizers
-            state_dict = torch.load(os.path.join(checkpoint_dir, 'optimizer.pt'))
-            self.optimizer_d.load_state_dict(state_dict['dis'])
-            self.optimizer_g.load_state_dict(state_dict['gen'])
+            if 'localD' in states:
+                self.localD.load_state_dict(states['D'])
+            if 'globalD' in states:
+                self.globalD.load_state_dict()
+            if 'optimG' in states:
+                self.optimizer_g.load_state_dict(states['optimG'])
+            if 'optimD' in states:
+                self.optimizer_d.load_state_dict(states['optimD'])
 
         print("Resume from {} at iteration {}".format(checkpoint_dir, iteration))
         logger.info("Resume from {} at iteration {}".format(checkpoint_dir, iteration))
