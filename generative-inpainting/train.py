@@ -1,28 +1,28 @@
 import os
 import random
-import time
 import shutil
 from argparse import ArgumentParser
 
-import torch
-import torch.nn as nn
 import torch.backends.cudnn as cudnn
-import torchvision
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from tensorboardX import SummaryWriter
 
-from trainer_ori import Trainer
-from data.dataset import Dataset
+from trainer import Trainer
+import sys, json
+from os import path
+
 from utils.tools import get_config, random_bbox, mask_image
 from utils.logger import get_logger
-from psnr import *
+from utils.psnr import *
+
+sys.path.append(path.dirname( path.dirname( path.abspath(__file__) ) ))
+from data.dataset import VGdataset, vg_collate_fn, test_mask
 
 parser = ArgumentParser()
-parser.add_argument('--config', type=str, default='configs/config.yaml',
-                    help="training configuration")
+parser.add_argument('--config', type=str, default='../configs/generative-config.yaml',help="training configuration")
 parser.add_argument('--seed', type=int, help='manual seed')
-parser.add_argument('--psnr', default=True)
+parser.add_argument('--psnr', type=bool)
 
 
 
@@ -65,27 +65,20 @@ def main():
     try:  # for unexpected error logging
         # Load the dataset
         logger.info("Training on dataset: {}".format(config['dataset_name']))
-        train_transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.ToTensor()
-        ])
-        train_dataset = torchvision.datasets.ImageFolder(root=config['train_data_path'], transform=train_transform)
-        # train_dataset = Dataset(data_path=config['train_data_path'],
-        #                         with_subfolder=config['data_with_subfolder'],
-        #                         image_shape=config['image_shape'],
-        #                         random_crop=config['random_crop'])
-        # val_dataset = Dataset(data_path=config['val_data_path'],
-        #                       with_subfolder=config['data_with_subfolder'],
-        #                       image_size=config['image_size'],
-        #                       random_crop=config['random_crop'])
-        train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
-                                                   batch_size=config['batch_size'],
-                                                   shuffle=True,
-                                                   num_workers=config['num_workers'])
-        # val_loader = torch.utils.data.DataLoader(dataset=val_dataset,
-        #                                           batch_size=config['batch_size'],
-        #                                           shuffle=False,
-        #                                           num_workers=config['num_workers'])
+
+        if config['dataset_name'] == "Visual Genome":
+            with open('../data/VisualGenome/vocab.json', 'r') as f:
+                vocab = json.load(f)
+            num_objects = len(vocab['object_idx_to_name'])
+        train_dataset = VGdataset(vocab=vocab, h5_path=config['h5_path'],
+                                  image_dir=config['image_dir'], image_size=config['image_size'], include_relationships=False)
+        loader_kwargs = {
+            'batch_size': config['batch_size'],
+            'num_workers': config['num_workers'],
+            'shuffle': True,
+            'collate_fn': vg_collate_fn,
+        }
+        train_loader = torch.utils.data.DataLoader(dataset=train_dataset, **loader_kwargs)
 
         # Define the trainer
         trainer = Trainer(config)
@@ -108,22 +101,24 @@ def main():
 
         for iteration in range(start_iteration, config['niter'] + 1):
             try:
-                ground_truth = next(iterable_train_loader)[0]
-            except StopIteration:
+                batch = next(iterable_train_loader)
+            except (StopIteration, RuntimeError):
                 iterable_train_loader = iter(train_loader)
-                ground_truth = next(iterable_train_loader)[0]
-
-            # Prepare the inputs
-            bboxes = random_bbox(config, batch_size=ground_truth.size(0))
-            x, mask = mask_image(ground_truth, bboxes, config)  #mask has 1 in its hole
+                batch = next(iterable_train_loader)
             if cuda:
-                x = x.cuda()
-                mask = mask.cuda()
-                ground_truth = ground_truth.cuda()
+                batch = [tensor.cuda() for tensor in batch]
+
+            ## boxes, triples, masks  size: [batch_size, obj_num,..]
+            ground_truth, objs, bboxes, triples, masks, obj_to_img, triple_to_img = batch
+
+            x = ground_truth * (1. - masks) # masks: masked pixels 1 otherwise 0
+            # testing if image is masked properly
+            # test_mask(x[1])
+            # assert False
 
             ###### Forward pass ######
             compute_g_loss = iteration % config['n_critic'] == 0
-            losses, inpainted_result, offset_flow = trainer(x, bboxes, mask, ground_truth, compute_g_loss)
+            losses, inpainted_result, offset_flow = trainer_module.forward(x, bboxes, masks, ground_truth, compute_g_loss)
             # Scalars from different devices are gathered into vectors
             for k in losses.keys():
                 if not losses[k].dim() == 0:
@@ -165,7 +160,7 @@ def main():
                     psnr_tensor, l2_tensor = psnr(ground_truth, inpainted_result)
                     message += ' psnr: {:.3f}, l2: {:.3f}'.format(psnr_tensor, l2_tensor)
 
-            logger.info(message)
+                logger.info(message)
 
             if iteration % (config['viz_iter']) == 0:
                 viz_max_out = config['viz_max_out']
